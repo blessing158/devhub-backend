@@ -13,15 +13,16 @@ from pydantic import BaseModel, Field
 from pwdlib import PasswordHash
 
 
-# =========================================================
-# DEVHUB BACKEND
-# =========================================================
-
 app = FastAPI(
     title="DEVHUB API",
     description="Backend API for DEVHUB",
     version="2.0.0"
 )
+
+
+# --------------------------------------------------
+# CORS
+# --------------------------------------------------
 
 app.add_middleware(
     CORSMiddleware,
@@ -32,9 +33,9 @@ app.add_middleware(
 )
 
 
-# =========================================================
-# CONFIGURATION
-# =========================================================
+# --------------------------------------------------
+# ENVIRONMENT
+# --------------------------------------------------
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 JWT_SECRET = os.getenv("JWT_SECRET")
@@ -45,16 +46,22 @@ if not DATABASE_URL:
 if not JWT_SECRET:
     raise RuntimeError("JWT_SECRET is not configured")
 
+
 JWT_ALGORITHM = "HS256"
 TOKEN_EXPIRE_HOURS = 168
+
+
+# --------------------------------------------------
+# SECURITY
+# --------------------------------------------------
 
 password_hash = PasswordHash.recommended()
 security = HTTPBearer()
 
 
-# =========================================================
+# --------------------------------------------------
 # DATABASE
-# =========================================================
+# --------------------------------------------------
 
 def get_db():
     return psycopg.connect(
@@ -64,9 +71,12 @@ def get_db():
 
 
 def init_database():
+
     with get_db() as conn:
+
         with conn.cursor() as cur:
 
+            # USERS
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     id BIGSERIAL PRIMARY KEY,
@@ -74,11 +84,12 @@ def init_database():
                     phone VARCHAR(30) UNIQUE NOT NULL,
                     password_hash TEXT NOT NULL,
                     profile_photo TEXT,
-                    status VARCHAR(100) DEFAULT 'Hey, I'm using DEVHUB',
+                    status VARCHAR(100) DEFAULT 'Hey, I am using DEVHUB',
                     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
                 )
             """)
 
+            # CONVERSATIONS
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS conversations (
                     id BIGSERIAL PRIMARY KEY,
@@ -86,28 +97,36 @@ def init_database():
                 )
             """)
 
+            # CONVERSATION MEMBERS
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS conversation_members (
                     conversation_id BIGINT NOT NULL
                         REFERENCES conversations(id)
                         ON DELETE CASCADE,
+
                     user_id BIGINT NOT NULL
                         REFERENCES users(id)
                         ON DELETE CASCADE,
+
                     PRIMARY KEY (conversation_id, user_id)
                 )
             """)
 
+            # MESSAGES
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS messages (
                     id BIGSERIAL PRIMARY KEY,
+
                     conversation_id BIGINT NOT NULL
                         REFERENCES conversations(id)
                         ON DELETE CASCADE,
+
                     sender_id BIGINT NOT NULL
                         REFERENCES users(id)
                         ON DELETE CASCADE,
+
                     message TEXT NOT NULL,
+
                     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -115,35 +134,59 @@ def init_database():
         conn.commit()
 
 
+# --------------------------------------------------
+# STARTUP
+# --------------------------------------------------
+
 @app.on_event("startup")
 def startup():
+
     init_database()
 
 
-# =========================================================
-# MODELS
-# =========================================================
+# --------------------------------------------------
+# REQUEST MODELS
+# --------------------------------------------------
 
 class RegisterRequest(BaseModel):
-    username: str = Field(min_length=3, max_length=30)
-    phone: str = Field(min_length=5, max_length=30)
-    password: str = Field(min_length=6, max_length=128)
+
+    username: str = Field(
+        min_length=3,
+        max_length=30
+    )
+
+    phone: str = Field(
+        min_length=5,
+        max_length=30
+    )
+
+    password: str = Field(
+        min_length=6,
+        max_length=128
+    )
 
 
 class LoginRequest(BaseModel):
+
     phone: str
+
     password: str
 
 
 class MessageRequest(BaseModel):
-    message: str = Field(min_length=1, max_length=5000)
+
+    message: str = Field(
+        min_length=1,
+        max_length=5000
+    )
 
 
-# =========================================================
+# --------------------------------------------------
 # JWT
-# =========================================================
+# --------------------------------------------------
 
 def create_token(user_id: int):
+
     expires = datetime.now(timezone.utc) + timedelta(
         hours=TOKEN_EXPIRE_HOURS
     )
@@ -160,12 +203,18 @@ def create_token(user_id: int):
     )
 
 
+# --------------------------------------------------
+# AUTHENTICATED USER
+# --------------------------------------------------
+
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
+
     token = credentials.credentials
 
     try:
+
         payload = jwt.decode(
             token,
             JWT_SECRET,
@@ -175,16 +224,25 @@ def get_current_user(
         user_id = int(payload["sub"])
 
     except Exception:
+
         raise HTTPException(
             status_code=401,
             detail="Invalid or expired token"
         )
 
     with get_db() as conn:
+
         with conn.cursor() as cur:
+
             cur.execute(
                 """
-                SELECT id, username, phone, profile_photo, status, created_at
+                SELECT
+                    id,
+                    username,
+                    phone,
+                    profile_photo,
+                    status,
+                    created_at
                 FROM users
                 WHERE id = %s
                 """,
@@ -194,6 +252,7 @@ def get_current_user(
             user = cur.fetchone()
 
     if not user:
+
         raise HTTPException(
             status_code=401,
             detail="User not found"
@@ -202,12 +261,13 @@ def get_current_user(
     return user
 
 
-# =========================================================
-# BASIC ROUTES
-# =========================================================
+# --------------------------------------------------
+# HOME
+# --------------------------------------------------
 
 @app.get("/")
 def home():
+
     return {
         "status": "online",
         "app": "DEVHUB",
@@ -216,16 +276,21 @@ def home():
     }
 
 
+# --------------------------------------------------
+# HEALTH
+# --------------------------------------------------
+
 @app.get("/health")
 def health():
+
     return {
         "status": "healthy"
     }
 
 
-# =========================================================
+# --------------------------------------------------
 # REGISTER
-# =========================================================
+# --------------------------------------------------
 
 @app.post("/auth/register")
 def register(data: RegisterRequest):
@@ -234,40 +299,70 @@ def register(data: RegisterRequest):
     phone = data.phone.strip()
 
     if not username:
+
         raise HTTPException(
             status_code=400,
             detail="Username is required"
         )
 
+    if not phone:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Phone number is required"
+        )
+
     with get_db() as conn:
+
         with conn.cursor() as cur:
 
             cur.execute(
                 """
                 SELECT id
                 FROM users
-                WHERE username = %s OR phone = %s
+                WHERE username = %s
+                   OR phone = %s
                 """,
-                (username, phone)
+                (
+                    username,
+                    phone
+                )
             )
 
             existing = cur.fetchone()
 
             if existing:
+
                 raise HTTPException(
                     status_code=409,
                     detail="Username or phone number already exists"
                 )
 
-            hashed_password = password_hash.hash(data.password)
+            hashed_password = password_hash.hash(
+                data.password
+            )
 
             cur.execute(
                 """
                 INSERT INTO users
-                    (username, phone, password_hash)
+                    (
+                        username,
+                        phone,
+                        password_hash
+                    )
                 VALUES
-                    (%s, %s, %s)
-                RETURNING id, username, phone, status, created_at
+                    (
+                        %s,
+                        %s,
+                        %s
+                    )
+                RETURNING
+                    id,
+                    username,
+                    phone,
+                    profile_photo,
+                    status,
+                    created_at
                 """,
                 (
                     username,
@@ -280,7 +375,9 @@ def register(data: RegisterRequest):
 
         conn.commit()
 
-    token = create_token(user["id"])
+    token = create_token(
+        user["id"]
+    )
 
     return {
         "success": True,
@@ -290,9 +387,9 @@ def register(data: RegisterRequest):
     }
 
 
-# =========================================================
+# --------------------------------------------------
 # LOGIN
-# =========================================================
+# --------------------------------------------------
 
 @app.post("/auth/login")
 def login(data: LoginRequest):
@@ -300,6 +397,7 @@ def login(data: LoginRequest):
     phone = data.phone.strip()
 
     with get_db() as conn:
+
         with conn.cursor() as cur:
 
             cur.execute(
@@ -314,6 +412,7 @@ def login(data: LoginRequest):
             user = cur.fetchone()
 
     if not user:
+
         raise HTTPException(
             status_code=401,
             detail="Invalid phone number or password"
@@ -323,12 +422,15 @@ def login(data: LoginRequest):
         data.password,
         user["password_hash"]
     ):
+
         raise HTTPException(
             status_code=401,
             detail="Invalid phone number or password"
         )
 
-    token = create_token(user["id"])
+    token = create_token(
+        user["id"]
+    )
 
     return {
         "success": True,
@@ -345,12 +447,14 @@ def login(data: LoginRequest):
     }
 
 
-# =========================================================
+# --------------------------------------------------
 # CURRENT USER
-# =========================================================
+# --------------------------------------------------
 
 @app.get("/users/me")
-def get_me(user=Depends(get_current_user)):
+def get_me(
+    user=Depends(get_current_user)
+):
 
     return {
         "success": True,
@@ -358,9 +462,9 @@ def get_me(user=Depends(get_current_user)):
     }
 
 
-# =========================================================
+# --------------------------------------------------
 # SEARCH USERS
-# =========================================================
+# --------------------------------------------------
 
 @app.get("/users/search")
 def search_users(
@@ -371,11 +475,13 @@ def search_users(
     query = q.strip().lower()
 
     if len(query) < 2:
+
         return {
             "users": []
         }
 
     with get_db() as conn:
+
         with conn.cursor() as cur:
 
             cur.execute(
@@ -387,7 +493,7 @@ def search_users(
                     status
                 FROM users
                 WHERE username ILIKE %s
-                AND id != %s
+                  AND id != %s
                 ORDER BY username
                 LIMIT 30
                 """,
@@ -404,9 +510,9 @@ def search_users(
     }
 
 
-# =========================================================
+# --------------------------------------------------
 # CREATE CONVERSATION
-# =========================================================
+# --------------------------------------------------
 
 @app.post("/conversations/{other_user_id}")
 def create_conversation(
@@ -417,38 +523,50 @@ def create_conversation(
     current_user_id = user["id"]
 
     if current_user_id == other_user_id:
+
         raise HTTPException(
             status_code=400,
             detail="You cannot message yourself"
         )
 
     with get_db() as conn:
+
         with conn.cursor() as cur:
 
+            # Check other user
             cur.execute(
-                "SELECT id FROM users WHERE id = %s",
+                """
+                SELECT id
+                FROM users
+                WHERE id = %s
+                """,
                 (other_user_id,)
             )
 
             other_user = cur.fetchone()
 
             if not other_user:
+
                 raise HTTPException(
                     status_code=404,
                     detail="User not found"
                 )
 
-            # Check whether conversation already exists
+            # Check existing conversation
             cur.execute(
                 """
                 SELECT c.id
                 FROM conversations c
+
                 JOIN conversation_members cm1
                     ON c.id = cm1.conversation_id
+
                 JOIN conversation_members cm2
                     ON c.id = cm2.conversation_id
+
                 WHERE cm1.user_id = %s
-                AND cm2.user_id = %s
+                  AND cm2.user_id = %s
+
                 GROUP BY c.id
                 """,
                 (
@@ -460,6 +578,7 @@ def create_conversation(
             existing = cur.fetchone()
 
             if existing:
+
                 return {
                     "success": True,
                     "conversation_id": existing["id"]
@@ -478,11 +597,14 @@ def create_conversation(
 
             conversation_id = conversation["id"]
 
-            # Add both users
+            # Add members
             cur.execute(
                 """
                 INSERT INTO conversation_members
-                    (conversation_id, user_id)
+                    (
+                        conversation_id,
+                        user_id
+                    )
                 VALUES
                     (%s, %s),
                     (%s, %s)
@@ -503,9 +625,9 @@ def create_conversation(
     }
 
 
-# =========================================================
+# --------------------------------------------------
 # SEND MESSAGE
-# =========================================================
+# --------------------------------------------------
 
 @app.post("/conversations/{conversation_id}/messages")
 def send_message(
@@ -514,16 +636,26 @@ def send_message(
     user=Depends(get_current_user)
 ):
 
+    message_text = data.message.strip()
+
+    if not message_text:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Message cannot be empty"
+        )
+
     with get_db() as conn:
+
         with conn.cursor() as cur:
 
-            # Check membership
+            # Verify membership
             cur.execute(
                 """
                 SELECT 1
                 FROM conversation_members
                 WHERE conversation_id = %s
-                AND user_id = %s
+                  AND user_id = %s
                 """,
                 (
                     conversation_id,
@@ -534,17 +666,27 @@ def send_message(
             member = cur.fetchone()
 
             if not member:
+
                 raise HTTPException(
                     status_code=403,
                     detail="You are not a member of this conversation"
                 )
 
+            # Insert message
             cur.execute(
                 """
                 INSERT INTO messages
-                    (conversation_id, sender_id, message)
+                    (
+                        conversation_id,
+                        sender_id,
+                        message
+                    )
                 VALUES
-                    (%s, %s, %s)
+                    (
+                        %s,
+                        %s,
+                        %s
+                    )
                 RETURNING
                     id,
                     conversation_id,
@@ -555,7 +697,7 @@ def send_message(
                 (
                     conversation_id,
                     user["id"],
-                    data.message.strip()
+                    message_text
                 )
             )
 
@@ -569,9 +711,9 @@ def send_message(
     }
 
 
-# =========================================================
+# --------------------------------------------------
 # GET MESSAGES
-# =========================================================
+# --------------------------------------------------
 
 @app.get("/conversations/{conversation_id}/messages")
 def get_messages(
@@ -580,14 +722,16 @@ def get_messages(
 ):
 
     with get_db() as conn:
+
         with conn.cursor() as cur:
 
+            # Verify membership
             cur.execute(
                 """
                 SELECT 1
                 FROM conversation_members
                 WHERE conversation_id = %s
-                AND user_id = %s
+                  AND user_id = %s
                 """,
                 (
                     conversation_id,
@@ -598,11 +742,13 @@ def get_messages(
             member = cur.fetchone()
 
             if not member:
+
                 raise HTTPException(
                     status_code=403,
                     detail="You are not a member of this conversation"
                 )
 
+            # Get messages
             cur.execute(
                 """
                 SELECT
@@ -613,9 +759,12 @@ def get_messages(
                     m.message,
                     m.created_at
                 FROM messages m
+
                 JOIN users u
                     ON u.id = m.sender_id
+
                 WHERE m.conversation_id = %s
+
                 ORDER BY m.created_at ASC
                 """,
                 (conversation_id,)
